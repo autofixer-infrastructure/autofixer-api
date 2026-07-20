@@ -1,0 +1,698 @@
+// Autofixer API - Prisma Schema
+// Mobile Automotive AC Service in Santiago, Chile
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum UserRole {
+  ADMIN
+  TECHNICIAN
+  CLIENT
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  FLOW
+  WEBPAY
+  TRANSFER
+  CASH
+}
+
+enum DocumentType {
+  BOLETA
+  FACTURA
+  NULA
+}
+
+enum ServiceType {
+  DIAGNOSTIC
+  R134A_REFILL
+  R1234YF_REFILL
+  SANITIZATION
+  COMPRESSOR_REPAIR
+  EVAPORATOR_CLEANING
+  CONDENSER_REPAIR
+  LEAK_REPAIR
+  OTHER
+}
+
+enum VehicleType {
+  SEDAN
+  SUV
+  PICKUP
+  VAN
+  TRUCK
+  MOTORCYCLE
+}
+
+// Base model with timestamps
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  password        String?
+  firstName       String
+  lastName        String
+  phone           String?
+  role            UserRole  @default(CLIENT)
+  avatarUrl       String?
+  googleId        String?   @unique
+  isGuest         Boolean   @default(false)  // For public cotizador users
+  isActive        Boolean   @default(true)
+  emailVerified   Boolean   @default(false)
+  lastLoginAt     DateTime?
+  refreshToken    String?
+  
+  // Client specific
+  addresses       Address[]
+  vehicles        Vehicle[]
+  bookings        Booking[]  @relation("ClientBookings")
+  reviews         Review[]
+  
+  // Technician specific (self-referencing for technicians)
+  technicianId    String?
+  
+  // Notifications
+  notifications   Notification[]
+  
+  // Analytics
+  sessions        Session[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+model Technician {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  
+  employeeCode    String    @unique
+  specialty       ServiceType[]
+  hourlyRate      Decimal   @default(15000) @db.Decimal(10, 2)
+  experienceYears Int       @default(0)
+  bio             String?
+  skills          String[]
+  
+  // Availability
+  isAvailable     Boolean   @default(true)
+  workingHours    Json?
+  
+  // Location
+  currentLat      Decimal?  @db.Decimal(10, 8)
+  currentLng      Decimal?  @db.Decimal(11, 8)
+  serviceRadiusKm Int       @default(30)
+  
+  // Stats
+  totalJobs       Int       @default(0)
+  rating          Decimal?  @db.Decimal(3, 2)
+  ratingCount     Int       @default(0)
+  
+  // Zone relations
+  zones           TechnicianZone[]
+  
+  // Booking relation
+  bookings        Booking[] @relation("TechnicianAssignedBookings")
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@map("technicians")
+}
+
+model Zone {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  displayName String
+  color       String    @default("#3B82F6")
+  
+  // Boundaries
+  boundaries  Json?     // GeoJSON polygon
+  
+  // Communes
+  communes    Commune[]
+  
+  // Technicians
+  technicians TechnicianZone[]
+  
+  // Pricing adjustment (e.g., +10% for hard-to-reach areas)
+  priceAdjustment Decimal @default(0) @db.Decimal(5, 2)
+  
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@map("zones")
+}
+
+model TechnicianZone {
+  id          String    @id @default(uuid())
+  technicianId String
+  technician  Technician @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  zoneId      String
+  zone        Zone      @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  
+  isPrimary   Boolean   @default(false)
+  
+  @@unique([technicianId, zoneId])
+  @@map("technician_zones")
+}
+
+model Commune {
+  id      String  @id @default(uuid())
+  name    String  @unique
+  region  String
+  
+  zoneId  String?
+  zone    Zone?   @relation(fields: [zoneId], references: [id])
+  
+  // Pricing
+  basePrice Decimal @default(0) @db.Decimal(10, 2)
+  travelFee  Decimal @default(0) @db.Decimal(10, 2)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("communes")
+}
+
+model Service {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  displayName String
+  description String
+  
+  type        ServiceType
+  category    String      @default("maintenance")
+  
+  // Base pricing
+  basePrice   Decimal     @db.Decimal(10, 2)
+  minPrice    Decimal?    @db.Decimal(10, 2)
+  maxPrice    Decimal?    @db.Decimal(10, 2)
+  
+  // Duration
+  estimatedDurationMinutes Int
+  minDurationMinutes       Int?
+  maxDurationMinutes       Int?
+  
+  // Requirements
+  parts       Json?       // [{ partId: "...", name: "...", costRange: [...] }]
+  materials   Json?       // [{ materialId: "...", name: "...", quantity: "..." }]
+  laborHours  Decimal?    @db.Decimal(4, 2)
+  
+  // Vehicle type multipliers
+  vehicleMultipliers Json? // { sedan: 1.0, suv: 1.2, pickup: 1.3, ... }
+  
+  // Active
+  isActive    Boolean     @default(true)
+  isPopular   Boolean     @default(false)
+  isFeatured  Boolean     @default(false)
+  
+  // Symptoms mapping
+  symptoms    Symptom[]
+  
+  bookings    BookingService[]
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  @@map("services")
+}
+
+model Symptom {
+  id          String   @id @default(uuid())
+  keyword     String   @unique
+  displayName String
+  description String?
+  
+  services    Service[]
+  
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  
+  @@map("symptoms")
+}
+
+model Vehicle {
+  id           String     @id @default(uuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  plate        String
+  brand        String
+  model        String
+  year         Int
+  type         VehicleType @default(SEDAN)
+  
+  // AC System info
+  refrigerantType ServiceType? // R134a, R1234yf
+  acSystemType    String?      // manual, automatic
+  compressorType  String?
+  
+  //vin
+  vin           String?    @unique
+  
+  // Maintenance tracking
+  lastServiceDate DateTime?
+  lastServiceType ServiceType?
+  mileage        Int?
+  
+  // Active
+  isActive     Boolean    @default(true)
+  
+  bookings     Booking[]
+  reviews      Review[]
+  
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  
+  @@index([userId])
+  @@map("vehicles")
+}
+
+model Address {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  street       String
+  number       String
+  department   String?
+  commune      String
+  region       String   @default("RM")
+  
+  // Coordinates
+  lat          Decimal  @db.Decimal(10, 8)
+  lng          Decimal  @db.Decimal(11, 8)
+  
+  // Reference
+  reference    String?
+  
+  isDefault    Boolean  @default(false)
+  
+  // Booking relation
+  bookings     Booking[] @relation("BookingAddress")
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@index([userId])
+  @@map("addresses")
+}
+
+model Quote {
+  id              String    @id @default(uuid())
+  
+  // Client info (optional for public quotes)
+  clientId        String?
+  clientEmail     String
+  clientPhone     String?
+  
+  // Location
+  communeId       String?
+  address         String?
+  lat             Decimal?  @db.Decimal(10, 8)
+  lng             Decimal?  @db.Decimal(11, 8)
+  
+  // Vehicle
+  vehicleType     VehicleType
+  vehicleBrand    String?
+  vehicleModel    String?
+  refrigerantType ServiceType?
+  
+  // Symptoms
+  symptoms        String[]
+  description     String?
+  
+  // Services selected
+  selectedServices Json     // [{ serviceId, serviceName, basePrice, finalPrice }]
+  
+  // Pricing breakdown
+  laborCost       Decimal   @db.Decimal(10, 2)
+  partsCost       Decimal   @db.Decimal(10, 2)
+  materialsCost   Decimal   @db.Decimal(10, 2)
+  travelCost      Decimal   @db.Decimal(10, 2)
+  discount        Decimal   @default(0) @db.Decimal(10, 2)
+  subtotal        Decimal   @db.Decimal(10, 2)
+  tax             Decimal   @default(0) @db.Decimal(10, 2)
+  total           Decimal   @db.Decimal(10, 2)
+  
+  // Validity
+  validUntil      DateTime?
+  
+  // Status
+  isConverted     Boolean   @default(false)
+  convertedToBookingId String?
+  
+  // Booking relation
+  bookings        Booking[] @relation("BookingQuote")
+  
+  // Metadata
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([clientEmail])
+  @@index([createdAt])
+  @@map("quotes")
+}
+
+model Booking {
+  id              String        @id @default(uuid())
+  bookingNumber   String        @unique // e.g., "AF-2024-00001"
+  
+  // Client
+  clientId        String
+  client          User          @relation("ClientBookings", fields: [clientId], references: [id])
+  
+  // Technician
+  technicianId    String?
+  technician      Technician?   @relation("TechnicianAssignedBookings", fields: [technicianId], references: [id])
+  
+  // Vehicle
+  vehicleId       String
+  vehicle         Vehicle       @relation(fields: [vehicleId], references: [id])
+  
+  // Location
+  addressId       String?
+  address         Address?      @relation("BookingAddress", fields: [addressId], references: [id])
+  
+  // Full address (denormalized for history)
+  street          String?
+  number          String?
+  department      String?
+  commune         String?
+  lat             Decimal?      @db.Decimal(10, 8)
+  lng             Decimal?      @db.Decimal(11, 8)
+  reference       String?
+  
+  // Services
+  services        BookingService[]
+  
+  // Quote reference
+  quoteId         String?
+  quote           Quote?        @relation("BookingQuote", fields: [quoteId], references: [id])
+  
+  // Pricing
+  laborCost       Decimal       @db.Decimal(10, 2)
+  partsCost       Decimal       @db.Decimal(10, 2)
+  materialsCost   Decimal       @db.Decimal(10, 2)
+  travelCost      Decimal       @db.Decimal(10, 2)
+  discount        Decimal       @default(0) @db.Decimal(10, 2)
+  subtotal        Decimal       @db.Decimal(10, 2)
+  tax             Decimal       @db.Decimal(10, 2)
+  total           Decimal       @db.Decimal(10, 2)
+  
+  // Status
+  status          BookingStatus @default(PENDING)
+  statusHistory   Json?         // [{ status, timestamp, note, userId }]
+  
+  // Scheduling
+  scheduledDate   DateTime?
+  scheduledTime   String?       // "10:00", "14:30"
+  estimatedDurationMinutes Int?
+  actualDurationMinutes Int?
+  
+  // Technician arrival
+  technicianArrivalTime DateTime?
+  serviceStartTime      DateTime?
+  serviceEndTime        DateTime?
+  
+  // Work notes
+  diagnosisNotes   String?
+  workPerformed    String?
+  recommendations  String?
+  
+  // Client feedback
+  review           Review?
+  
+  // Payment
+  payment          Payment?
+  
+  // Document
+  documentType     DocumentType?
+  documentNumber   String?
+  siiDocumentId    String?
+  
+  // Notifications sent
+  notificationsSent Json?       // { reminder24h: true, reminder2h: true, ... }
+  
+  // Cancellation
+  cancellationReason String?
+  cancelledAt     DateTime?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@index([clientId])
+  @@index([technicianId])
+  @@index([status])
+  @@index([scheduledDate])
+  @@map("bookings")
+}
+
+model BookingService {
+  id          String   @id @default(uuid())
+  bookingId   String
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  serviceId   String
+  service     Service  @relation(fields: [serviceId], references: [id])
+  
+  // Actual values (may differ from quote)
+  quantity    Int      @default(1)
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  totalPrice  Decimal  @db.Decimal(10, 2)
+  
+  // Parts used
+  partsUsed   Json?    // [{ partId, name, quantity, unitCost }]
+  
+  notes       String?
+  
+  createdAt   DateTime @default(now())
+  
+  @@unique([bookingId, serviceId])
+  @@map("booking_services")
+}
+
+model Review {
+  id            String   @id @default(uuid())
+  bookingId     String   @unique
+  booking       Booking  @relation(fields: [bookingId], references: [id])
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  vehicleId     String?
+  vehicle       Vehicle? @relation(fields: [vehicleId], references: [id])
+  
+  // Ratings
+  overallRating Int      // 1-5
+  punctuality   Int?     // 1-5
+  professionalism Int?   // 1-5
+  workQuality   Int?     // 1-5
+  communication Int?     // 1-5
+  
+  // Comment
+  comment       String?
+  technicianResponse String?
+  
+  // Media
+  photos        String[] // URLs
+  
+  isPublic      Boolean  @default(true)
+  isVerified    Boolean  @default(true)
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("reviews")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  bookingId       String        @unique
+  booking         Booking       @relation(fields: [bookingId], references: [id])
+  
+  // Amount
+  amount          Decimal       @db.Decimal(10, 2)
+  currency        String        @default("CLP")
+  
+  // Method
+  method          PaymentMethod
+  
+  // Status
+  status          PaymentStatus @default(PENDING)
+  
+  // Flow specific
+  flowToken       String?
+  flowOrderId     String?
+  flowTransferDate DateTime?
+  
+  // WebPay specific
+  webpayToken     String?
+  webpayOrderId   String?
+  webpayAuthorizationCode String?
+  webpayCardType  String?
+  webpayCardLast4 String?
+  
+  // Payment details
+  paymentUrl      String?
+  returnUrl       String?
+  
+  // SII Document
+  documentType    DocumentType?
+  documentNumber  String?
+  
+  // Refund
+  refundedAt      DateTime?
+  refundReason    String?
+  refundAmount     Decimal?      @db.Decimal(10, 2)
+  
+  // Metadata
+  metadata        Json?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@index([status])
+  @@map("payments")
+}
+
+model Notification {
+  id          String       @id @default(uuid())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id])
+  
+  type        String       // booking_created, booking_confirmed, technician_en_route, etc.
+  title       String
+  message     String
+  
+  // Data
+  data        Json?        // { bookingId, technicianId, etc. }
+  
+  // Delivery
+  channel     String       @default("both") // email, push, both
+  emailSent   Boolean      @default(false)
+  pushSent    Boolean      @default(false)
+  emailError  String?
+  pushError   String?
+  
+  // Read status
+  readAt      DateTime?
+  
+  // Scheduled
+  scheduledFor DateTime?
+  sentAt      DateTime?
+  
+  createdAt   DateTime     @default(now())
+  
+  @@index([userId, readAt])
+  @@index([scheduledFor])
+  @@map("notifications")
+}
+
+model Maintenance {
+  id          String       @id @default(uuid())
+  
+  // Vehicle
+  vehicleId   String
+  vehicleVin  String?
+  
+  // Type
+  type        ServiceType
+  description String?
+  
+  // Date
+  serviceDate DateTime
+  
+  // Location
+  location    String?
+  address     String?
+  
+  // Technician
+  technicianId String?
+  
+  // Cost
+  cost        Decimal?     @db.Decimal(10, 2)
+  
+  // Details
+  partsUsed   Json?        // [{ name, quantity, cost }]
+  materials   Json?        // [{ name, quantity, cost }]
+  laborHours  Decimal?     @db.Decimal(4, 2)
+  laborCost   Decimal?     @db.Decimal(10, 2)
+  
+  // Invoice/Document
+  invoiceNumber String?
+  invoiceUrl  String?
+  
+  // Notes
+  notes       String?
+  
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  
+  @@index([vehicleId])
+  @@index([serviceDate])
+  @@map("maintenance_records")
+}
+
+// Analytics models
+model Session {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  
+  sessionId   String   @unique
+  deviceInfo  Json?    // { browser, os, device }
+  location    Json?    // { country, city, lat, lng }
+  
+  // Page views
+  pageViews   Json?    // [{ path, time, duration }]
+  
+  // Events
+  events      Json?    // [{ type, data, timestamp }]
+  
+  // Engagement
+  startedAt   DateTime
+  endedAt     DateTime?
+  duration    Int?     // seconds
+  
+  // Source
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  
+  createdAt   DateTime @default(now())
+  
+  @@index([userId])
+  @@index([startedAt])
+  @@map("sessions")
+}
