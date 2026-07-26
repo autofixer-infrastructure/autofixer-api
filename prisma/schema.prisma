@@ -91,7 +91,7 @@ model User {
   bookings        Booking[]  @relation("ClientBookings")
   reviews         Review[]
   
-  // Technician relation (back-reference from Technician.userId)
+  // Technician relation (back-reference)
   technician      Technician?
   
   // Notifications
@@ -112,6 +112,7 @@ model User {
 model Technician {
   id              String    @id @default(uuid())
   userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   employeeCode    String    @unique
   specialty       ServiceType[]
