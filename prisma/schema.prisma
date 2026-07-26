@@ -91,9 +91,8 @@ model User {
   bookings        Booking[]  @relation("ClientBookings")
   reviews         Review[]
   
-  // Technician specific (self-referencing for technicians)
-  technicianId    String?
-  technician      Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  // Technician relation (back-reference from Technician.userId)
+  technician      Technician?
   
   // Notifications
   notifications   Notification[]
