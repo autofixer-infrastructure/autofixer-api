@@ -93,6 +93,7 @@ model User {
   
   // Technician specific (self-referencing for technicians)
   technicianId    String?
+  technician      Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
   
   // Notifications
   notifications   Notification[]
@@ -336,6 +337,7 @@ model Quote {
   
   // Location
   communeId       String?
+  commune         String?  // Denormalized for convenience
   address         String?
   lat             Decimal?  @db.Decimal(10, 8)
   lng             Decimal?  @db.Decimal(11, 8)

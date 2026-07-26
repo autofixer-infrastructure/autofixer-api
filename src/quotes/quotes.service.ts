@@ -16,7 +16,7 @@ import {
   QUOTE_VALIDITY_DAYS,
 } from '../constants/pricing';
 
-interface ServicePrice {
+export interface ServicePrice {
   serviceId: string;
   serviceName: string;
   basePrice: number;
@@ -463,7 +463,7 @@ export class QuotesService {
     } else if (serviceType === ServiceType.R1234YF_REFILL) {
       materials = Math.round(finalPrice * 0.35); // More expensive gas
       parts = Math.round(finalPrice * 0.05);
-    } else if ([ServiceType.COMPRESSOR_REPAIR, ServiceType.CONDENSER_REPAIR].includes(serviceType)) {
+    } else if ([ServiceType.COMPRESSOR_REPAIR, ServiceType.CONDENSER_REPAIR] as ServiceType[]).includes(serviceType)) {
       parts = Math.round(finalPrice * 0.4); // Major parts
       materials = Math.round(finalPrice * 0.1);
     }

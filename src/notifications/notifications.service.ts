@@ -3,8 +3,9 @@
  * Handles SMS, WhatsApp, and Email notifications for booking events
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../prisma/prisma.service';
 
 export enum NotificationType {
   BOOKING_CREATED = 'BOOKING_CREATED',
@@ -40,6 +41,7 @@ export class NotificationsService {
 
   constructor(
     private configService: ConfigService,
+    private prisma: PrismaService,
   ) {}
 
   /**
@@ -296,15 +298,175 @@ export class NotificationsService {
   }
 
   private getEmailSubject(type: NotificationType): string {
-    const subjects = {
+    const subjects: Record<string, string> = {
+      [NotificationType.BOOKING_CREATED]: '📋 Tu solicitud fue recibida - Autofixer',
       [NotificationType.BOOKING_CONFIRMED]: '✅ Tu servicio fue confirmado - Autofixer',
       [NotificationType.TECHNICIAN_EN_ROUTE]: '🚗 Tu técnico va en camino - Autofixer',
       [NotificationType.TECHNICIAN_ARRIVED]: '🏠 Tu técnico llegó - Autofixer',
+      [NotificationType.SERVICE_STARTED]: '🔧 Tu servicio ha iniciado - Autofixer',
       [NotificationType.SERVICE_COMPLETED]: '✅ Servicio completado - Autofixer',
       [NotificationType.REMINDER_30MIN]: '⏰ Recordatorio: Tu servicio es en 30 min - Autofixer',
+      [NotificationType.REMINDER_1DAY]: '📅 Recordatorio: Tu servicio es mañana - Autofixer',
       [NotificationType.SERVICE_CANCELLED]: '❌ Servicio cancelado - Autofixer',
     };
     return subjects[type] || 'Notificación Autofixer';
+  }
+
+  /**
+   * Get user notifications with pagination
+   */
+  async getUserNotifications(
+    userId: string,
+    options: { page: number; limit: number; unreadOnly?: boolean },
+  ) {
+    const { page, limit, unreadOnly = false } = options;
+    const skip = (page - 1) * limit;
+
+    const where = {
+      userId,
+      ...(unreadOnly ? { readAt: null } : {}),
+    };
+
+    const [notifications, total, unreadCount] = await Promise.all([
+      this.prisma.notification.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.notification.count({ where }),
+      this.prisma.notification.count({ where: { userId, readAt: null } }),
+    ]);
+
+    return {
+      data: notifications,
+      meta: {
+        total,
+        page,
+        limit,
+        unreadCount,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Mark a notification as read
+   */
+  async markAsRead(id: string, userId: string) {
+    const notification = await this.prisma.notification.findUnique({
+      where: { id },
+    });
+
+    if (!notification) {
+      throw new NotFoundException('Notificación no encontrada');
+    }
+
+    if (notification.userId !== userId) {
+      throw new ForbiddenException('No tienes permiso para actualizar esta notificación');
+    }
+
+    return this.prisma.notification.update({
+      where: { id },
+      data: { isRead: true },
+    });
+  }
+
+  /**
+   * Mark all user notifications as read
+   */
+  async markAllAsRead(userId: string) {
+    await this.prisma.notification.updateMany({
+      where: { userId, isRead: false },
+      data: { isRead: true },
+    });
+    return { success: true };
+  }
+
+  /**
+   * Delete a notification
+   */
+  async delete(id: string, userId: string) {
+    const notification = await this.prisma.notification.findUnique({
+      where: { id },
+    });
+
+    if (!notification) {
+      throw new NotFoundException('Notificación no encontrada');
+    }
+
+    if (notification.userId !== userId) {
+      throw new ForbiddenException('No tienes permiso para eliminar esta notificación');
+    }
+
+    await this.prisma.notification.delete({ where: { id } });
+    return { success: true };
+  }
+
+  /**
+   * Send notification to a specific user
+   */
+  async sendToUser(
+    userId: string,
+    data: {
+      type?: NotificationType;
+      title?: string;
+      message?: string;
+      data?: Record<string, any>;
+      channel?: 'SMS' | 'WHATSAPP' | 'EMAIL' | 'ALL';
+    },
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    const payload: NotificationPayload = {
+      type: data.type || NotificationType.BOOKING_CONFIRMED,
+      customerPhone: user.phone || '',
+      customerName: user.name,
+      bookingId: data.data?.bookingId || '',
+      notes: data.message,
+    };
+
+    const success = await this.sendNotification(payload);
+
+    // Store in DB
+    await this.prisma.notification.create({
+      data: {
+        userId,
+        type: data.type || NotificationType.BOOKING_CONFIRMED,
+        title: data.title || 'Notificación',
+        message: data.message || '',
+        data: data.data || {},
+        isRead: false,
+      },
+    });
+
+    return { success };
+  }
+
+  /**
+   * Send bulk notifications to multiple users
+   */
+  async sendBulk(
+    userIds: string[],
+    data: {
+      type?: NotificationType;
+      title?: string;
+      message?: string;
+      data?: Record<string, any>;
+      channel?: 'SMS' | 'WHATSAPP' | 'EMAIL' | 'ALL';
+    },
+  ) {
+    const results = await Promise.allSettled(
+      userIds.map((userId) => this.sendToUser(userId, data)),
+    );
+
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.filter((r) => r.status === 'rejected').length;
+
+    return { succeeded, failed, total: userIds.length };
   }
 
   private getEmailHtml(payload: NotificationPayload, message: string): string {

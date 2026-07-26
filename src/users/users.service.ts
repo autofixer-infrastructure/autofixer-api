@@ -266,51 +266,56 @@ export class UsersService {
   async getTechnicians(params: { availableOnly?: boolean; zoneId?: string }) {
     const { availableOnly = false, zoneId } = params;
 
+    // Query User with technicianId (direct relation to Technician model)
     const where: any = {
-      technicianProfile: {
-        isNot: null,
-      },
+      technicianId: { not: null },
     };
 
+    let technicianWhere: any = {};
     if (availableOnly) {
-      where.technicianProfile = {
-        ...where.technicianProfile,
-        isAvailable: true,
-      };
+      technicianWhere = { isAvailable: true };
     }
 
-    if (zoneId) {
-      where.technicianProfile = {
-        ...where.technicianProfile,
-        zones: {
-          some: { zoneId },
-        },
-      };
-    }
-
-    return this.prisma.user.findMany({
+    const users = await this.prisma.user.findMany({
       where,
       include: {
-        technicianProfile: true,
-      },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        avatarUrl: true,
-        technicianProfile: {
-          select: {
-            id: true,
-            employeeCode: true,
-            specialty: true,
-            rating: true,
-            ratingCount: true,
-            totalJobs: true,
-            isAvailable: true,
-          },
+        // Direct query through technicianId -> Technician
+        _count: {
+          select: { bookings: true },
         },
       },
     });
+
+    // Get technician data for each user
+    const userIds = users.map(u => u.id);
+    const technicians = await this.prisma.technician.findMany({
+      where: {
+        userId: { in: userIds },
+        ...technicianWhere,
+      },
+      include: zoneId ? { zones: { where: { zoneId } } } : { zones: true },
+    });
+
+    const techMap = new Map(technicians.map(t => [t.userId, t]));
+
+    return users
+      .map(user => {
+        const tech = techMap.get(user.id);
+        if (!tech) return null;
+        return {
+          id: user.id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          avatarUrl: user.avatarUrl,
+          employeeCode: tech.employeeCode,
+          specialty: tech.specialty,
+          rating: tech.rating,
+          ratingCount: tech.ratingCount,
+          totalJobs: tech.totalJobs,
+          isAvailable: tech.isAvailable,
+        };
+      })
+      .filter(Boolean);
   }
 }

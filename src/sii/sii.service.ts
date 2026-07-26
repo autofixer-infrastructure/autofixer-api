@@ -379,7 +379,9 @@ export class SiiService {
 
     const bookings = await this.prisma.booking.findMany({
       where: {
-        documentType: { in: [DocumentType.BOLETA, DocumentType.FACTURA] },
+        documentType: {
+          in: [DocumentType.BOLETA, DocumentType.FACTURA],
+        },
         createdAt: {
           gte: startOfDay,
           lte: endOfDay,

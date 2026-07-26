@@ -117,7 +117,7 @@ export class BookingsService {
     });
 
     // Group by time slot
-    const bookedSlots = existingBookings.reduce((acc, b) => {
+    const bookedSlots = existingBookings.reduce((acc: Record<string, string[]>, b: any) => {
       if (!acc[b.scheduledTimeSlot]) {
         acc[b.scheduledTimeSlot] = [];
       }
@@ -130,13 +130,13 @@ export class BookingsService {
     // Get technicians with their zones
     const technicians = await this.prisma.user.findMany({
       where: { role: 'TECHNICIAN' },
-      include: { technicianProfile: true },
+      include: { technician: true },
     });
 
     // Build available slots with zone info
     const availableSlots = allSlots.map(slot => {
       const booked = bookedSlots[slot] || [];
-      const availableTechnicians = technicians.filter(t => {
+      const availableTechnicians = technicians.filter((t: any) => {
         // Check if technician is not booked in this slot
         const isBooked = booked.includes(t.id);
         // TODO: Check zone compatibility

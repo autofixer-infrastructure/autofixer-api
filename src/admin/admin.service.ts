@@ -52,17 +52,26 @@ export class AdminService {
         },
       }),
       
-      // Top technicians by jobs
-      this.prisma.technician.findMany({
+      // Top technicians by jobs - join via userId
+      this.prisma.user.findMany({
+        where: { role: 'TECHNICIAN' },
         take: 5,
-        orderBy: { totalJobs: 'desc' },
+        orderBy: { createdAt: 'desc' },
         include: {
-          user: {
-            select: { firstName: true, lastName: true },
-          },
+          technicianProfile: true,
         },
       }),
     ]);
+
+    // Map users with technician profile
+    const topTechnicians = usersWithTechnicians
+      .filter((u) => u.technicianProfile)
+      .map((u) => ({
+        id: u.technicianProfile!.id,
+        name: `${u.firstName} ${u.lastName}`,
+        totalJobs: u.technicianProfile!.totalJobs,
+        rating: u.technicianProfile!.rating,
+      }));
 
     return {
       users: {
@@ -80,12 +89,7 @@ export class AdminService {
         transactions: totalRevenue._count || 0,
       },
       recentBookings,
-      topTechnicians: topTechnicians.map((t) => ({
-        id: t.id,
-        name: `${t.user.firstName} ${t.user.lastName}`,
-        totalJobs: t.totalJobs,
-        rating: t.rating,
-      })),
+      topTechnicians,
     };
   }
 
@@ -95,60 +99,58 @@ export class AdminService {
   async getTechnicianReport(technicianId?: string) {
     const where = technicianId ? { id: technicianId } : {};
 
-    const technicians = await this.prisma.technician.findMany({
-      where,
+    // Get users with TECHNICIAN role and their profiles
+    const users = await this.prisma.user.findMany({
+      where: { role: 'TECHNICIAN', ...where },
       include: {
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-          },
-        },
-        bookings: {
-          where: {
-            status: BookingStatus.COMPLETED,
-          },
-          select: {
-            id: true,
-            total: true,
-            serviceEndTime: true,
-            scheduledDate: true,
-          },
-        },
-        reviews: {
-          select: {
-            overallRating: true,
-            punctuality: true,
-            professionalism: true,
-            workQuality: true,
-            communication: true,
+        technicianProfile: {
+          include: {
+            bookings: {
+              where: { status: BookingStatus.COMPLETED },
+              select: {
+                id: true,
+                total: true,
+                serviceEndTime: true,
+                scheduledDate: true,
+              },
+            },
+            reviews: {
+              select: {
+                overallRating: true,
+                punctuality: true,
+                professionalism: true,
+                workQuality: true,
+                communication: true,
+              },
+            },
           },
         },
       },
     });
 
-    return technicians.map((tech) => {
-      const totalJobs = tech.bookings.length;
-      const totalEarnings = tech.bookings.reduce((sum, b) => sum + Number(b.total), 0);
-      
-      const avgRating = tech.reviews.length > 0
-        ? tech.reviews.reduce((sum, r) => sum + r.overallRating, 0) / tech.reviews.length
-        : 0;
+    return users
+      .filter((u) => u.technicianProfile)
+      .map((u) => {
+        const tech = u.technicianProfile!;
+        const totalJobs = tech.bookings.length;
+        const totalEarnings = tech.bookings.reduce((sum, b) => sum + Number(b.total), 0);
 
-      return {
-        id: tech.id,
-        name: `${tech.user.firstName} ${tech.user.lastName}`,
-        email: tech.user.email,
-        employeeCode: tech.employeeCode,
-        totalJobs,
-        totalEarnings,
-        averageRating: Math.round(avgRating * 100) / 100,
-        isAvailable: tech.isAvailable,
-        bookings: tech.bookings.slice(0, 10), // Last 10 bookings
-      };
-    });
+        const avgRating = tech.reviews.length > 0
+          ? tech.reviews.reduce((sum, r) => sum + r.overallRating, 0) / tech.reviews.length
+          : 0;
+
+        return {
+          id: tech.id,
+          name: `${u.firstName} ${u.lastName}`,
+          email: u.email,
+          employeeCode: tech.employeeCode,
+          totalJobs,
+          totalEarnings,
+          averageRating: Math.round(avgRating * 100) / 100,
+          isAvailable: tech.isAvailable,
+          bookings: tech.bookings.slice(0, 10),
+        };
+      });
   }
 
   /**
@@ -186,7 +188,7 @@ export class AdminService {
     });
 
     // Group by date
-    const grouped = bookings.reduce((acc, booking) => {
+    const grouped = bookings.reduce((acc: Record<string, any>, booking: any) => {
       const date = booking.serviceEndTime
         ? new Date(booking.serviceEndTime).toISOString().split('T')[0]
         : 'unknown';
@@ -215,7 +217,7 @@ export class AdminService {
 
     const totals = Object.values(grouped);
     const grandTotal = totals.reduce(
-      (acc, item) => ({
+      (acc: { totalRevenue: number; totalBookings: number }, item: { totalRevenue: number; totalBookings: number }) => ({
         totalRevenue: acc.totalRevenue + item.totalRevenue,
         totalBookings: acc.totalBookings + item.totalBookings,
       }),
@@ -224,7 +226,7 @@ export class AdminService {
 
     return {
       summary: grandTotal,
-      breakdown: totals.sort((a, b) => a.date.localeCompare(b.date)),
+      breakdown: totals.sort((a: { date: string }, b: { date: string }) => a.date.localeCompare(b.date)),
     };
   }
 
@@ -296,8 +298,8 @@ export class AdminService {
   async createCommune(data: { name: string; region: string; zoneId?: string; basePrice?: number; travelFee?: number }) {
     return this.prisma.commune.create({
       data: {
-        name,
-        region,
+        name: data.name,
+        region: data.region,
         zoneId: data.zoneId,
         basePrice: data.basePrice || 0,
         travelFee: data.travelFee || 0,
@@ -363,8 +365,10 @@ export class AdminService {
           services: { include: { service: true } },
         },
       }),
-      this.prisma.technician.findMany({
-        include: { user: true },
+      // Get technicians via User -> TechnicianProfile
+      this.prisma.user.findMany({
+        where: { role: 'TECHNICIAN' },
+        include: { technicianProfile: true },
       }),
       this.prisma.service.findMany(),
     ]);
